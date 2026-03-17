@@ -37,12 +37,15 @@ export class TaskLogger extends EventEmitter {
     private readonly executorId: string;
     private readonly sequenceMap = new Map<string, number>();
     private closed = false;
+    private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+    private readonly LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
     constructor(opts: { baseDir: string }) {
         super();
         this.baseDir = path.resolve(opts.baseDir);
         this.executorId = this.generateId();
         fs.mkdir(this.baseDir, { recursive: true }).catch(() => {});
+        this.cleanupTimer = setInterval(() => this.cleanupOldLogs(), 24 * 60 * 60 * 1000);
     }
 
     // ========================================================================
@@ -164,8 +167,28 @@ export class TaskLogger extends EventEmitter {
     async close(): Promise<void> {
         if (this.closed) return;
         this.closed = true;
+        if (this.cleanupTimer) clearInterval(this.cleanupTimer);
         this.sequenceMap.clear();
         this.removeAllListeners();
+    }
+
+    // ========================================================================
+    // 私有方法 — 日志清理
+    // ========================================================================
+
+    private async cleanupOldLogs(): Promise<void> {
+        try {
+            const entries = await fs.readdir(this.baseDir, { withFileTypes: true });
+            const cutoff = Date.now() - this.LOG_MAX_AGE_MS;
+            for (const entry of entries) {
+                if (!entry.isDirectory()) continue;
+                const dirPath = path.join(this.baseDir, entry.name);
+                const stat = await fs.stat(dirPath);
+                if (stat.mtimeMs < cutoff) {
+                    await fs.rm(dirPath, { recursive: true, force: true });
+                }
+            }
+        } catch { /* ignore cleanup errors */ }
     }
 
     // ========================================================================

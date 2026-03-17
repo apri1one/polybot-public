@@ -10,12 +10,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { config } from 'dotenv';
 
 import { PolyMultiModule } from './core/index.js';
-import { PolyMultiOrderService } from './core/order-service.js';
+import { PolyMultiOrderService, type RoutedPolyOrderRequest } from './core/order-service.js';
 import { PolyMultiTaskService } from './core/task-service.js';
 import { PolyMultiUserWsTelegramBridge } from './core/user-ws-telegram-bridge.js';
 import { PolyTraderFactory } from './core/trader-factory.js';
 import type { CreatePolyMultiTaskInput, PolyMultiTask } from './core/task-types.js';
 import { TaskLogger } from './logger/index.js';
+import { LogQueryService } from './logger/log-query-service.js';
 import { createTelegramNotifier, type TelegramNotifier } from './notification/telegram.js';
 import { PolySportsService } from './sports/poly-sports-service.js';
 import type { PolySportsSSE } from './sports/types.js';
@@ -135,6 +136,7 @@ async function main(): Promise<void> {
 
     const logsBaseDir = resolve(dataDir, 'logs', 'tasks');
     const taskLogger = new TaskLogger({ baseDir: logsBaseDir });
+    const logQueryService = new LogQueryService(logsBaseDir);
 
     // Telegram
     const pmBotToken = process.env.POLY_MULTI_TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
@@ -226,6 +228,25 @@ async function main(): Promise<void> {
     });
 
     // ========================================================================
+    // Balance 轮询
+    // ========================================================================
+
+    let cachedBalance = 0;
+    let balanceTimer: ReturnType<typeof setInterval> | null = null;
+
+    const refreshBalance = async () => {
+        try {
+            cachedBalance = await orderService.getBalance();
+            broadcastSSE('balance', JSON.stringify({ balance: cachedBalance }));
+        } catch {
+            // Ignore balance refresh failures and retry on the next interval.
+        }
+    };
+
+    await refreshBalance();
+    balanceTimer = setInterval(refreshBalance, 30_000);
+
+    // ========================================================================
     // HTTP 服务
     // ========================================================================
 
@@ -284,6 +305,7 @@ async function main(): Promise<void> {
 
             // 发送初始快照
             const sportsSnapshot = sportsService.getSnapshot();
+            sportsSnapshot.balance = cachedBalance;
             sendSSE(client, 'sports', JSON.stringify(sportsSnapshot));
             sendSSE(client, 'tasks', JSON.stringify(taskService.getSnapshot()));
             client.initialized = true;
@@ -299,12 +321,84 @@ async function main(): Promise<void> {
         // --- Account API ---
         if (url === '/api/account' && method === 'GET') {
             sendJson(res, 200, {
-                balance: 0,
+                balance: cachedBalance,
                 tradeEnabled: polyMulti.isReady(),
                 polyMultiReady: polyMulti.isReady(),
                 telegramEnabled: Boolean(telegram),
                 taskStats: taskService.getSnapshot().stats,
             });
+            return;
+        }
+
+        // --- Order: POST place ---
+        if (url === '/api/order' && method === 'POST') {
+            try {
+                const input = JSON.parse(await readBody(req)) as RoutedPolyOrderRequest;
+                const result = await orderService.placeOrder(input);
+
+                if (result.success) {
+                    try {
+                        cachedBalance = await orderService.getBalance({
+                            walletId: result.walletId,
+                            polyMultiPairingId: result.pairingId ?? input.polyMultiPairingId,
+                            polyMultiMasterWalletId: input.polyMultiMasterWalletId,
+                        });
+                        broadcastSSE('balance', JSON.stringify({ balance: cachedBalance }));
+                    } catch {
+                        // Ignore balance refresh failures after successful order placement.
+                    }
+                }
+
+                sendJson(res, result.success ? 200 : 400, result);
+            } catch (error: unknown) {
+                sendJson(res, 400, { success: false, error: (error as Error)?.message || 'Invalid order request' });
+            }
+            return;
+        }
+
+        // --- Order: DELETE cancel ---
+        const cancelOrderMatch = url.match(/^\/api\/order\/(.+)$/);
+        if (cancelOrderMatch && method === 'DELETE') {
+            const walletId = requestUrl.searchParams.get('walletId');
+            const pairingId = requestUrl.searchParams.get('pairingId');
+            const masterWalletId = requestUrl.searchParams.get('masterWalletId');
+            const success = await orderService.cancelOrder(decodeURIComponent(cancelOrderMatch[1]), {
+                walletId: walletId ? Number(walletId) : undefined,
+                polyMultiPairingId: pairingId ? Number(pairingId) : undefined,
+                polyMultiMasterWalletId: masterWalletId ? Number(masterWalletId) : undefined,
+            });
+            sendJson(res, success ? 200 : 500, { success });
+            return;
+        }
+
+        // --- Task Timeline / Logs API ---
+        const timelineMatch = url.match(/^\/api\/logs\/tasks\/([a-zA-Z0-9_-]+)\/timeline$/);
+        if (timelineMatch && method === 'GET') {
+            const taskId = timelineMatch[1];
+            try {
+                const timeline = logQueryService.getTaskTimeline(taskId);
+                if (timeline) {
+                    sendJson(res, 200, { success: true, data: timeline });
+                } else {
+                    sendJson(res, 404, { success: false, error: 'Task logs not found' });
+                }
+            } catch (error: unknown) {
+                sendJson(res, 500, { success: false, error: (error as Error)?.message || 'Failed to query timeline' });
+            }
+            return;
+        }
+
+        if (url.startsWith('/api/logs/tasks') && method === 'GET' && !url.includes('/timeline')) {
+            try {
+                const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '50', 10);
+                const offset = Number.parseInt(requestUrl.searchParams.get('offset') || '0', 10);
+                const status = requestUrl.searchParams.get('status') || undefined;
+                const type = requestUrl.searchParams.get('type') || undefined;
+                const result = logQueryService.getTaskList({ limit, offset, status, type });
+                sendJson(res, 200, { success: true, data: result });
+            } catch (error: unknown) {
+                sendJson(res, 500, { success: false, error: (error as Error)?.message || 'Failed to query logs' });
+            }
             return;
         }
 
@@ -487,6 +581,17 @@ async function main(): Promise<void> {
     // 启动
     // ========================================================================
 
+    // Kill any existing process on our port (Linux only)
+    try {
+        const { execSync } = await import('node:child_process');
+        const pid = execSync(`lsof -ti:${port}`, { encoding: 'utf-8' }).trim();
+        if (pid) {
+            execSync(`kill -9 ${pid}`);
+            console.log(`[${SERVICE_ID}] Killed existing process on port ${port} (PID: ${pid})`);
+            await new Promise(r => setTimeout(r, 500));
+        }
+    } catch { /* no process on port, or not Linux */ }
+
     server.listen(port, host, () => {
         console.log(`=== poly-multi server ===`);
         console.log(`URL: http://localhost:${port}`);
@@ -494,6 +599,12 @@ async function main(): Promise<void> {
         console.log(`Data dir: ${dataDir}`);
         console.log(`Poly Multi ready: ${polyMulti.isReady() ? 'yes' : 'no'}`);
         console.log(`Telegram: ${telegram ? 'enabled' : 'disabled'}`);
+
+        if (telegram) {
+            void telegram.sendText(`<b>🟢 poly-bot started</b>
+Port: ${port}
+Ready: ${polyMulti.isReady()}`);
+        }
     });
 
     // ========================================================================
@@ -506,6 +617,11 @@ async function main(): Promise<void> {
         if (shuttingDown) return;
         shuttingDown = true;
         console.log(`\n[${SERVICE_ID}] Shutting down...`);
+
+        if (balanceTimer) clearInterval(balanceTimer);
+        if (telegram) {
+            await telegram.sendText('<b>🔴 poly-bot stopped</b>').catch(() => {});
+        }
 
         disconnectTaskLoggerNotifier();
         wsTelegramBridge.stop();
