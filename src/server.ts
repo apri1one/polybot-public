@@ -35,7 +35,7 @@ config({ path: resolve(import.meta.dirname, '../.env') });
 // ============================================================================
 
 const SERVICE_ID = 'poly-multi';
-const DEFAULT_PORT = 3030;
+const DEFAULT_PORT = 4030;
 const TERMINAL_TASK_STATUSES = new Set<PolyMultiTask['status']>(['PARTIAL', 'COMPLETED', 'CANCELLED', 'FAILED']);
 
 // ============================================================================
