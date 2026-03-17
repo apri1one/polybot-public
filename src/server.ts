@@ -1,16 +1,11 @@
 /**
  * poly-multi HTTP 服务入口
  *
- * 精简版 standalone-poly-server，去掉：
- * - PolySportsService（使用 stub ISportsMetadataProvider）
- * - PolyTradeService / fallback 单钱包交易
- * - 前端静态文件服务
- * - 体育相关 SSE 事件
- * - 余额定时刷新（walletQueryScheduler 已内置）
- * - 端口占用自动杀进程
+ * 集成 PolySportsService + 前端静态文件服务 + SSE 体育数据推送
  */
 
-import { resolve } from 'node:path';
+import { extname, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { config } from 'dotenv';
 
@@ -22,7 +17,8 @@ import { PolyTraderFactory } from './core/trader-factory.js';
 import type { CreatePolyMultiTaskInput, PolyMultiTask } from './core/task-types.js';
 import { TaskLogger } from './logger/index.js';
 import { createTelegramNotifier, type TelegramNotifier } from './notification/telegram.js';
-import type { ISportsMetadataProvider } from './types.js';
+import { PolySportsService } from './sports/poly-sports-service.js';
+import type { PolySportsSSE } from './sports/types.js';
 
 // ============================================================================
 // .env
@@ -67,15 +63,33 @@ function readBody(req: IncomingMessage): Promise<string> {
     });
 }
 
-// ============================================================================
-// Stub ISportsMetadataProvider（无体育数据）
-// ============================================================================
+function getMimeType(filePath: string): string {
+    const ext = extname(filePath).toLowerCase();
+    const mimeMap: Record<string, string> = {
+        '.html': 'text/html; charset=utf-8',
+        '.js': 'application/javascript; charset=utf-8',
+        '.jsx': 'application/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.svg': 'image/svg+xml',
+        '.png': 'image/png',
+        '.ico': 'image/x-icon',
+    };
+    return mimeMap[ext] || 'text/plain; charset=utf-8';
+}
 
-const stubSportsProvider: ISportsMetadataProvider = {
-    getTokenMetadata() {
-        return null;
-    },
-};
+function extractActiveTaskTokenIds(tasks: Array<{ status?: string; tokenId?: string; hedgeTokenId?: string }> | undefined): string[] {
+    if (!Array.isArray(tasks) || tasks.length === 0) return [];
+
+    const activeTokenIds = new Set<string>();
+    for (const task of tasks) {
+        if (!task || TERMINAL_TASK_STATUSES.has(task.status as PolyMultiTask['status'] || '' as PolyMultiTask['status'])) continue;
+        if (task.tokenId) activeTokenIds.add(task.tokenId);
+        if (task.hedgeTokenId) activeTokenIds.add(task.hedgeTokenId);
+    }
+
+    return Array.from(activeTokenIds);
+}
 
 // ============================================================================
 // 主函数
@@ -115,6 +129,7 @@ async function main(): Promise<void> {
     // 核心模块初始化
     // ========================================================================
 
+    const sportsService = new PolySportsService();
     const polyMulti = new PolyMultiModule();
     polyMulti.initRouter(() => corsHeaders);
 
@@ -166,7 +181,7 @@ async function main(): Promise<void> {
     // ========================================================================
 
     const wsTelegramBridge = new PolyMultiUserWsTelegramBridge({
-        sportsService: stubSportsProvider,
+        sportsService,
         walletManager: polyMulti.walletManager,
         pairingService: polyMulti.pairingService,
         getTasks: () => taskService.listTasks(true),
@@ -179,7 +194,11 @@ async function main(): Promise<void> {
     // 事件订阅
     // ========================================================================
 
+    // Wire sportsService active token tracking + start
+    sportsService.setActiveTaskTokens(extractActiveTaskTokenIds(taskService.getSnapshot().tasks));
+
     taskService.on('tasks:snapshot', snapshot => {
+        sportsService.setActiveTaskTokens(extractActiveTaskTokenIds(snapshot.tasks));
         broadcastSSE('tasks', JSON.stringify(snapshot));
         void wsTelegramBridge.sync().catch(error => {
             console.warn(`[${SERVICE_ID}] WS Telegram sync failed: ${(error as Error)?.message || error}`);
@@ -199,8 +218,18 @@ async function main(): Promise<void> {
     });
 
     // ========================================================================
+    // Sports Service 启动
+    // ========================================================================
+
+    await sportsService.start((data: PolySportsSSE) => {
+        broadcastSSE('sports', JSON.stringify(data));
+    });
+
+    // ========================================================================
     // HTTP 服务
     // ========================================================================
+
+    const FRONTEND_DIR = resolve(import.meta.dirname, 'frontend');
 
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
         const method = req.method || 'GET';
@@ -240,8 +269,8 @@ async function main(): Promise<void> {
             return;
         }
 
-        // --- SSE ---
-        if (url === '/api/events' && method === 'GET') {
+        // --- SSE (both /api/events and /api/stream for frontend compat) ---
+        if ((url === '/api/events' || url === '/api/stream') && method === 'GET') {
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
@@ -254,8 +283,28 @@ async function main(): Promise<void> {
             req.on('close', () => sseClients.delete(res));
 
             // 发送初始快照
+            const sportsSnapshot = sportsService.getSnapshot();
+            sendSSE(client, 'sports', JSON.stringify(sportsSnapshot));
             sendSSE(client, 'tasks', JSON.stringify(taskService.getSnapshot()));
             client.initialized = true;
+            return;
+        }
+
+        // --- Sports API ---
+        if (url === '/api/sports' && method === 'GET') {
+            sendJson(res, 200, sportsService.getAllMarkets());
+            return;
+        }
+
+        // --- Account API ---
+        if (url === '/api/account' && method === 'GET') {
+            sendJson(res, 200, {
+                balance: 0,
+                tradeEnabled: polyMulti.isReady(),
+                polyMultiReady: polyMulti.isReady(),
+                telegramEnabled: Boolean(telegram),
+                taskStats: taskService.getSnapshot().stats,
+            });
             return;
         }
 
@@ -406,8 +455,32 @@ async function main(): Promise<void> {
             }
         }
 
-        // --- 404 ---
-        sendJson(res, 404, { success: false, error: 'Not Found' });
+        // --- Static file serving (frontend) ---
+        const relativePath = url === '/' ? '/poly-multi.html' : url;
+        const filePath = resolve(FRONTEND_DIR, `.${relativePath}`);
+
+        if (!filePath.startsWith(FRONTEND_DIR)) {
+            res.writeHead(403, corsHeaders);
+            res.end('Forbidden');
+            return;
+        }
+
+        if (!existsSync(filePath)) {
+            sendJson(res, 404, { success: false, error: 'Not Found' });
+            return;
+        }
+
+        try {
+            const content = readFileSync(filePath);
+            res.writeHead(200, {
+                'Content-Type': getMimeType(filePath),
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                ...corsHeaders,
+            });
+            res.end(content);
+        } catch (error: unknown) {
+            sendJson(res, 500, { success: false, error: (error as Error)?.message || 'Failed to read file' });
+        }
     });
 
     // ========================================================================
@@ -445,6 +518,7 @@ async function main(): Promise<void> {
             console.warn(`[${SERVICE_ID}] Task logger close failed: ${(error as Error)?.message || error}`);
         }
 
+        sportsService.stop();
         polyMulti.destroy();
         server.close(() => process.exit(0));
     };
