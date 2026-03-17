@@ -11,11 +11,8 @@
 import { Wallet, verifyTypedData } from 'ethers';
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
-import * as fs from 'fs';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
 import { TelegramNotifier, createTelegramNotifier, type OrderAlert } from '../notification/telegram.js';
-import { PolymarketUserWsClient, getPolymarketUserWsClient } from './user-ws-client.js';
+import { PolymarketUserWsClient } from './user-ws-client.js';
 
 // ============================================================================
 // 常量
@@ -24,36 +21,6 @@ import { PolymarketUserWsClient, getPolymarketUserWsClient } from './user-ws-cli
 const CLOB_BASE_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon
 const GTD_SECURITY_BUFFER_SECONDS = 60;
-
-// poly-slugs.json 缓存类型
-interface PolySlugEntry {
-    eventSlug: string;
-    marketSlug: string;
-    question?: string;  // 完整问题形式，优先使用
-}
-type PolySlugsCache = Record<string, PolySlugEntry>;
-
-// 加载 poly-slugs.json 缓存
-let polySlugsCache: PolySlugsCache = {};
-try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    // polymarket -> src -> root -> data
-    const slugsPath = path.resolve(__dirname, '../../data/poly-slugs.json');
-    if (fs.existsSync(slugsPath)) {
-        polySlugsCache = JSON.parse(fs.readFileSync(slugsPath, 'utf-8'));
-        console.log(`[PolymarketTrader] Loaded ${Object.keys(polySlugsCache).length} poly-slugs entries`);
-    }
-} catch (e: any) {
-    console.warn(`[PolymarketTrader] Failed to load poly-slugs.json: ${e?.message || e}`);
-}
-
-// 从缓存获取市场标题（优先 question，fallback 到 marketSlug）
-function getMarketTitleFromCache(conditionId: string): string | undefined {
-    const entry = polySlugsCache[conditionId];
-    if (!entry) return undefined;
-    return entry.question || entry.marketSlug;
-}
 
 function normalizePolymarketOrderStatus(status: unknown): PolyOrderStatus['status'] {
     if (status === 'MATCHED') return 'MATCHED';
@@ -98,7 +65,9 @@ export interface PolyOrderInput {
     outcome?: 'YES' | 'NO';     // YES/NO 方向，用于通知显示
     outcomeName?: string;       // 多选市场的选项名（如 "Trump"），二元市场可省略
     marketTitle?: string;       // 市场标题，用于 TG 通知显示（优先级最高）
-    conditionId?: string;       // Polymarket conditionId，用于从 poly-slugs 缓存查找标题
+    conditionId?: string;       // Polymarket conditionId
+    expiresAt?: number | Date;  // GTC 订单过期时间
+    _allowanceRetried?: boolean; // 内部标记: allowance 不足自动重试
 }
 
 export interface PolyOrderResult {
@@ -118,10 +87,6 @@ export interface PolyPosition {
     tokenId: string;
     quantity: number;
     avgPrice: number;
-}
-
-export interface PolyOrderInput {
-    expiresAt?: number | Date;
 }
 
 function toFutureTimestampMs(value: number | Date | undefined): number | null {
@@ -144,22 +109,6 @@ export interface PreflightResult {
     recoveredAddress?: string;
     /** 市场实际 negRisk 值 (来自 Polymarket API) */
     actualNegRisk?: boolean;
-}
-
-// ============================================================================
-// WS 订单簿提供者（依赖注入，避免循环依赖）
-// ============================================================================
-
-type WsOrderbookProvider = (tokenId: string) => { bids: { price: number; size: number }[]; asks: { price: number; size: number }[] } | null;
-let wsOrderbookProvider: WsOrderbookProvider | null = null;
-
-/**
- * 设置 WS 订单簿提供者（由 start-dashboard 注入）
- * 任务执行时优先使用 WS 缓存，减少 API 调用
- */
-export function setPolymarketWsOrderbookProvider(provider: WsOrderbookProvider): void {
-    wsOrderbookProvider = provider;
-    console.log('[PolymarketTrader] WS 订单簿提供者已注入');
 }
 
 // ============================================================================
@@ -258,7 +207,7 @@ export class PolymarketTrader extends EventEmitter {
         // 初始化 User WebSocket 客户端（可选；失败则回退到纯 REST 轮询）
         if (this.useWsForPolling) {
             try {
-                this.userWs = getPolymarketUserWsClient({
+                this.userWs = new PolymarketUserWsClient({
                     apiKey: this.apiKey,
                     secret: this.apiSecret,
                     passphrase: this.passphrase,
@@ -463,11 +412,11 @@ export class PolymarketTrader extends EventEmitter {
                 }
 
                 // 自动重试: allowance 不足时刷新 allowance 后重试一次
-                if (errorText.includes('not enough balance / allowance') && !(input as any)._allowanceRetried) {
+                if (errorText.includes('not enough balance / allowance') && !input._allowanceRetried) {
                     console.log('[PolymarketTrader] Allowance insufficient, calling updateBalanceAllowance and retrying...');
                     const updated = await this.updateBalanceAllowance();
                     if (updated) {
-                        return this.placeOrder({ ...input, _allowanceRetried: true } as any);
+                        return this.placeOrder({ ...input, _allowanceRetried: true });
                     }
                 }
 
@@ -476,7 +425,7 @@ export class PolymarketTrader extends EventEmitter {
                 if (this.telegram) {
                     const marketName = input.marketTitle
                         || this.tokenTitleCache.get(input.tokenId)
-                        || (input.conditionId && getMarketTitleFromCache(input.conditionId))
+
                         || `Token ${input.tokenId.slice(0, 10)}...`;
                     this.telegram.alertError({
                         operation: '下单',
@@ -506,7 +455,6 @@ export class PolymarketTrader extends EventEmitter {
             if (this.telegram) {
                 const marketName = input.marketTitle
                     || this.tokenTitleCache.get(input.tokenId)
-                    || (input.conditionId && getMarketTitleFromCache(input.conditionId))
                     || `Token ${input.tokenId.slice(0, 10)}...`;
                 this.telegram.alertOrder({
                     type: 'PLACED',
@@ -529,7 +477,6 @@ export class PolymarketTrader extends EventEmitter {
             if (this.telegram) {
                 const marketName = input.marketTitle
                     || this.tokenTitleCache.get(input.tokenId)
-                    || (input.conditionId && getMarketTitleFromCache(input.conditionId))
                     || `Token ${input.tokenId.slice(0, 10)}...`;
                 this.telegram.alertError({
                     operation: '下单',
@@ -709,7 +656,6 @@ export class PolymarketTrader extends EventEmitter {
             timeoutMs?: number;
             skipTelegram?: boolean;
             marketTitle?: string;   // 市场标题，用于 TG 通知（优先级最高）
-            conditionId?: string;   // conditionId，用于从 poly-slugs 查找标题
         }
     ): Promise<boolean> {
         const timeoutMs = options?.timeoutMs ?? 5000;
@@ -745,7 +691,7 @@ export class PolymarketTrader extends EventEmitter {
                 if (this.telegram && !options?.skipTelegram) {
                     const marketName = options?.marketTitle
                         || this.orderTitleCache.get(orderId)
-                        || (options?.conditionId && getMarketTitleFromCache(options.conditionId))
+
                         || `Order ${orderId.slice(0, 10)}...`;
                     this.telegram.alertOrder({
                         type: 'CANCELLED',
@@ -807,19 +753,9 @@ export class PolymarketTrader extends EventEmitter {
     }
 
     /**
-     * 获取订单簿
-     * 优先使用 WS 缓存（实时），fallback 到 REST API
+     * 获取订单簿 (REST API)
      */
     async getOrderbook(tokenId: string): Promise<{ bids: { price: number; size: number }[]; asks: { price: number; size: number }[] } | null> {
-        // 优先使用 WS 缓存（实时数据，减少 API 调用）
-        if (wsOrderbookProvider) {
-            const wsBook = wsOrderbookProvider(tokenId);
-            if (wsBook && (wsBook.bids.length > 0 || wsBook.asks.length > 0)) {
-                return wsBook;
-            }
-        }
-
-        // Fallback: REST API
         try {
             const res = await fetch(`${CLOB_BASE_URL}/book?token_id=${tokenId}`);
             if (!res.ok) return null;
@@ -1110,15 +1046,3 @@ export class PolymarketTrader extends EventEmitter {
     }
 }
 
-// ============================================================================
-// 单例
-// ============================================================================
-
-let instance: PolymarketTrader | null = null;
-
-export function getPolymarketTrader(): PolymarketTrader {
-    if (!instance) {
-        instance = new PolymarketTrader();
-    }
-    return instance;
-}

@@ -145,9 +145,9 @@ export class TaskLogger extends EventEmitter {
 
         let message = `${emoji} <b>${event.type}</b>\n`;
         message += `<b>时间:</b> ${time}\n`;
-        if (title) message += `<b>市场:</b> ${title}\n`;
-        if (platform) message += `<b>平台:</b> ${platform.toUpperCase()}\n`;
-        if (side) message += `<b>方向:</b> ${side}\n`;
+        if (title) message += `<b>市场:</b> ${this.escapeHtml(title)}\n`;
+        if (platform) message += `<b>平台:</b> ${this.escapeHtml(platform.toUpperCase())}\n`;
+        if (side) message += `<b>方向:</b> ${this.escapeHtml(side)}\n`;
         if (detail) message += detail;
         message += `<b>任务:</b> <code>${taskId}</code>`;
         return message;
@@ -164,6 +164,7 @@ export class TaskLogger extends EventEmitter {
     async close(): Promise<void> {
         if (this.closed) return;
         this.closed = true;
+        this.sequenceMap.clear();
         this.removeAllListeners();
     }
 
@@ -197,6 +198,13 @@ export class TaskLogger extends EventEmitter {
         const next = current + 1;
         this.sequenceMap.set(taskId, next);
         return next;
+    }
+
+    private escapeHtml(text: string): string {
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
     }
 
     private generateId(): string {
@@ -233,12 +241,12 @@ export class TaskLogger extends EventEmitter {
         let detail = '';
 
         // 标题
-        if (payload.title) title = payload.title as string;
+        if (payload.title) title = this.escapeHtml(payload.title as string);
 
         // TaskLifecycle — taskConfig
         if (payload.taskConfig) {
             const config = payload.taskConfig as { title?: string; type?: string; quantity?: number; predictPrice?: number };
-            if (!title) title = config.title;
+            if (!title && config.title) title = this.escapeHtml(config.title);
             side = config.type;
             if (config.quantity !== undefined && config.predictPrice !== undefined) {
                 detail += `<b>数量:</b> ${config.quantity} shares\n`;
@@ -289,11 +297,11 @@ export class TaskLogger extends EventEmitter {
         // 错误
         if (payload.error) {
             const err = payload.error as { message?: string };
-            detail += `<b>错误:</b> ${err.message || 'Unknown error'}\n`;
+            detail += `<b>错误:</b> ${this.escapeHtml(err.message || 'Unknown error')}\n`;
         }
 
         // 原因
-        if (payload.reason) detail += `<b>原因:</b> ${payload.reason as string}\n`;
+        if (payload.reason) detail += `<b>原因:</b> ${this.escapeHtml(payload.reason as string)}\n`;
 
         return { title, platform, side, detail };
     }

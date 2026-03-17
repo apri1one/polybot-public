@@ -743,37 +743,3 @@ function normalizeMarkets(markets: string[]): string[] {
             .filter(Boolean),
     ));
 }
-
-// ============================================================================
-// Singleton
-// ============================================================================
-
-let instance: PolymarketUserWsClient | null = null;
-let instanceAuth: UserWsAuth | null = null;
-
-function isSameAuth(a: UserWsAuth, b: UserWsAuth): boolean {
-    return a.apiKey === b.apiKey && a.secret === b.secret && a.passphrase === b.passphrase;
-}
-
-export function getPolymarketUserWsClient(auth?: UserWsAuth, config?: PolymarketUserWsClientConfig): PolymarketUserWsClient {
-    if (!instance) {
-        if (!auth) throw new Error('Auth required for first initialization');
-        instance = new PolymarketUserWsClient(auth, config);
-        instanceAuth = auth;
-        return instance;
-    }
-
-    if (auth && instanceAuth && !isSameAuth(auth, instanceAuth)) {
-        throw new Error('PolymarketUserWsClient already initialized with different credentials');
-    }
-
-    return instance;
-}
-
-export function destroyPolymarketUserWsClient(): void {
-    if (instance) {
-        instance.disconnect();
-        instance = null;
-        instanceAuth = null;
-    }
-}
