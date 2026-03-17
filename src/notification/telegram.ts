@@ -1,12 +1,9 @@
 /**
  * Telegram Notification Module
- * 
+ *
  * Sends alerts for:
- * - Arbitrage opportunities found
- * - Order placed / cancelled
- * - Order filled
+ * - Order placed / cancelled / filled
  * - Execution errors
- * - Daily/hourly statistics
  */
 
 import TelegramBot from 'node-telegram-bot-api';
@@ -17,34 +14,9 @@ export interface TelegramConfig {
     enabled?: boolean;
 }
 
-export interface ArbitrageAlert {
-    marketName: string;
-    predictMarketId: number;
-    mode: 'TAKER' | 'MAKER';
-    side?: 'YES' | 'NO';      // YES→NO 或 NO→YES 套利方向
-    predictYesPrice: number;
-    polymarketNoPrice: number;
-    predictFee?: number;
-    totalCost: number;
-    profitPercent: number;
-    maxQuantity?: number;
-    estimatedProfit?: number;   // 预估利润 (USD)
-
-    // 资金占用明细
-    predictCost?: number;       // Predict 端资金占用 (USD)
-    polymarketCost?: number;    // Polymarket 端资金占用 (USD)
-
-    // 吃单模式费用明细
-    feeRateBps?: number;        // 费率 (基点, 1 bps = 0.01%)
-    feeTotal?: number;          // 总费用 (USD)
-
-    // 结算时间
-    endDate?: string | null;    // ISO 格式的结算时间
-}
-
 export interface OrderAlert {
     type: 'PLACED' | 'CANCELLED' | 'FILLED' | 'PARTIAL_FILL' | 'FAILED';
-    platform: 'PREDICT' | 'POLYMARKET';
+    platform: 'POLYMARKET';
     marketName: string;
     action: 'BUY' | 'SELL';             // 买入/卖出
     side: 'YES' | 'NO';                 // YES/NO 方向
@@ -57,32 +29,23 @@ export interface OrderAlert {
     error?: string;                     // 错误信息 (用于 FAILED 类型)
     role?: 'Maker' | 'Taker';           // 角色：挂单方/吃单方
     orderHash?: string;                 // 订单哈希
-    dataSource?: string;                // 数据来源 (如 "BSC WebSocket", "REST API")
+    dataSource?: string;                // 数据来源 (如 "REST API")
     // 延迟统计 (ms)
     latency?: {
         submitToFirstStatus?: number;   // 下单到首次获取状态
         submitToFill?: number;          // 下单到成交
         statusFetchAttempts?: number;   // 状态获取尝试次数
-        taskTotalMs?: number;           // 任务总耗时（Predict 下单 → Polymarket 获取到成交）
+        taskTotalMs?: number;           // 任务总耗时
     };
 }
 
 export interface ExecutionErrorAlert {
     operation: string;
-    platform: 'PREDICT' | 'POLYMARKET' | 'BOTH';
+    platform: 'POLYMARKET';
     marketName: string;
     error: string;
     stack?: string;
     requiresManualIntervention: boolean;
-}
-
-export interface StatisticsAlert {
-    period: 'HOURLY' | 'DAILY';
-    tradesExecuted: number;
-    totalProfit: number;
-    totalVolume: number;
-    successRate: number;
-    opportunitiesFound: number;
 }
 
 export class TelegramNotifier {
@@ -112,65 +75,13 @@ export class TelegramNotifier {
     // ============================================================================
 
     /**
-     * Send arbitrage opportunity alert
-     */
-    async alertArbitrage(alert: ArbitrageAlert): Promise<void> {
-        // 区分吃单/挂单的图标
-        const modeIcon = alert.mode === 'MAKER' ? '📌' : '⚡';
-        const modeText = alert.mode === 'MAKER' ? '挂单' : '吃单';
-        const profitEmoji = alert.profitPercent >= 0.5 ? '🔥' : '💰';
-        const sideText = alert.side === 'NO' ? 'NO→YES' : 'YES→NO';
-
-        // 计算资金占用 (如果没有提供，用价格 * 数量估算)
-        const qty = alert.maxQuantity || 0;
-        const predictCost = alert.predictCost ?? (alert.predictYesPrice * qty);
-        const polyCost = alert.polymarketCost ?? (alert.polymarketNoPrice * qty);
-
-        // 计算预估利润 (如果没提供，用百分比 * 资金占用估算)
-        const totalFunds = predictCost + polyCost;
-        const estProfit = alert.estimatedProfit ?? (totalFunds * alert.profitPercent / 100);
-
-        // 格式化结算时间
-        let settlementText = '';
-        if (alert.endDate) {
-            const endDateObj = new Date(alert.endDate);
-            const now = new Date();
-            const daysLeft = Math.ceil((endDateObj.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-            const dateStr = `${endDateObj.getFullYear()}/${endDateObj.getMonth() + 1}/${endDateObj.getDate()}`;
-            settlementText = `\n📅 结算: ${dateStr} (${daysLeft}天后)`;
-        }
-
-        // 基础信息 - 紧凑格式，关键信息在前
-        let message = `${profitEmoji} <b>发现套利机会</b> ${modeIcon} ${modeText}
-<b>利润:</b> $${estProfit.toFixed(2)} (${alert.profitPercent.toFixed(2)}%)  <b>占用:</b> $${totalFunds.toFixed(0)}${settlementText}
-
-<b>市场:</b> ${this.escapeHtml(alert.marketName)}
-<b>Predict ID:</b> ${alert.predictMarketId}
-
-<b>方向:</b> ${sideText}
-<b>深度:</b> ${qty.toFixed(0)} 股
-<b>总成本:</b> ${(alert.totalCost * 100).toFixed(1)}¢  pr:$${predictCost.toFixed(0)}  pm:$${polyCost.toFixed(0)}`;
-
-        // 吃单模式显示费用信息 (TAKER 有手续费，MAKER 无手续费)
-        if (alert.mode === 'TAKER' && alert.feeRateBps !== undefined) {
-            const feePercent = (alert.feeRateBps / 100).toFixed(2);
-            const feeTotal = alert.feeTotal ?? 0;
-            message += `
-<b>费用:</b> ${feePercent}% ($${feeTotal.toFixed(4)})`;
-        }
-
-        await this.send(message);
-    }
-
-    /**
      * Send order status alert
      *
-     * 新格式：平台标识 + 状态 + 角色 + 数据来源
-     * 🟠 Predict / 🔵 Polymarket
+     * 格式：平台标识 + 状态 + 角色 + 数据来源
+     * 🔵 Polymarket
      */
     async alertOrder(alert: OrderAlert): Promise<void> {
-        // 平台图标
-        const platformIcon = alert.platform === 'PREDICT' ? '🟠' : '🔵';
+        const platformIcon = '🔵';
         const emoji = this.getOrderEmoji(alert.type);
         const statusText = this.getOrderStatusText(alert.type);
 
@@ -233,7 +144,7 @@ export class TelegramNotifier {
             : new Date().toLocaleString('zh-CN', { hour12: false });
 
         // 数据来源
-        const dataSource = alert.dataSource || (alert.platform === 'PREDICT' ? 'REST API' : 'Polymarket WS');
+        const dataSource = alert.dataSource || 'Polymarket WS';
 
         let message = `${platformIcon} ${emoji} <b>${alert.platform} 订单${statusText}</b>
 
@@ -297,67 +208,6 @@ ${emoji} <b>${urgency}: 执行错误</b> ${emoji}
 ${alert.stack ? `<b>堆栈:</b>\n<code>${this.escapeHtml(alert.stack.slice(0, 500))}</code>` : ''}
 
 ${alert.requiresManualIntervention ? '<b>⚡ 需要人工介入 ⚡</b>' : ''}
-`;
-        await this.send(message);
-    }
-
-    /**
-     * Send price change warning (arb disappeared)
-     */
-    async alertPriceChange(marketName: string, oldCost: number, newCost: number, action: string): Promise<void> {
-        const message = `
-⚠️ <b>价格变动警告</b>
-
-<b>市场:</b> ${this.escapeHtml(marketName)}
-<b>原成本:</b> ${(oldCost * 100).toFixed(1)}¢
-<b>新成本:</b> ${(newCost * 100).toFixed(1)}¢
-<b>操作:</b> ${action}
-`;
-        await this.send(message);
-    }
-
-    /**
-     * Send statistics summary
-     */
-    async alertStatistics(stats: StatisticsAlert): Promise<void> {
-        const emoji = stats.successRate >= 0.9 ? '📈' : stats.successRate >= 0.7 ? '📊' : '📉';
-        const periodText = stats.period === 'HOURLY' ? '每小时' : '每日';
-
-        const message = `
-${emoji} <b>${periodText}统计</b>
-
-<b>交易次数:</b> ${stats.tradesExecuted}
-<b>发现机会:</b> ${stats.opportunitiesFound}
-<b>成功率:</b> ${(stats.successRate * 100).toFixed(1)}%
-<b>交易量:</b> $${stats.totalVolume.toFixed(2)}
-<b>利润:</b> $${stats.totalProfit.toFixed(2)}
-`;
-        await this.send(message);
-    }
-
-    /**
-     * Send startup notification
-     */
-    async alertStartup(mode: string, markets: number): Promise<void> {
-        const message = `
-🚀 <b>套利机器人已启动</b>
-
-<b>模式:</b> ${mode}
-<b>市场数:</b> ${markets}
-<b>时间:</b> ${new Date().toLocaleString('zh-CN')}
-`;
-        await this.send(message);
-    }
-
-    /**
-     * Send shutdown notification
-     */
-    async alertShutdown(reason: string): Promise<void> {
-        const message = `
-🛑 <b>套利机器人已停止</b>
-
-<b>原因:</b> ${reason}
-<b>时间:</b> ${new Date().toLocaleString('zh-CN')}
 `;
         await this.send(message);
     }
@@ -501,110 +351,4 @@ ${emoji} <b>${periodText}统计</b>
 // Factory function
 export function createTelegramNotifier(config: TelegramConfig): TelegramNotifier {
     return new TelegramNotifier(config);
-}
-
-/**
- * 模拟推送测试 - 打印两种模式的套利通知样例
- */
-export function simulateArbNotifications(): void {
-    console.log('\n' + '='.repeat(60));
-    console.log('📱 Telegram 套利通知模拟预览');
-    console.log('='.repeat(60));
-
-    // 模拟 TAKER (吃单) 通知 - 有手续费
-    const takerExample: ArbitrageAlert = {
-        marketName: 'Will Bitcoin reach $100k by end of 2024?',
-        predictMarketId: 289,
-        mode: 'TAKER',
-        side: 'YES',
-        predictYesPrice: 0.52,
-        polymarketNoPrice: 0.46,
-        totalCost: 0.98,
-        profitPercent: 2.04,
-        maxQuantity: 150,
-        predictCost: 78.00,  // 0.52 * 150
-        polymarketCost: 69.00, // 0.46 * 150
-        estimatedProfit: 3.00, // 预估利润 $3.00
-        feeRateBps: 50,      // 0.5% Taker 费率
-        feeTotal: 0.39,      // 预估费用 (78 * 0.5%)
-        endDate: '2026-07-01T04:00:00Z', // 结算时间
-    };
-
-    // 模拟 MAKER (挂单) 通知 - 无手续费
-    const makerExample: ArbitrageAlert = {
-        marketName: 'Will ETH flip BTC market cap in 2025?',
-        predictMarketId: 456,
-        mode: 'MAKER',
-        side: 'NO',
-        predictYesPrice: 0.35,
-        polymarketNoPrice: 0.62,
-        totalCost: 0.97,
-        profitPercent: 3.09,
-        maxQuantity: 200,
-        predictCost: 70.00,  // 0.35 * 200
-        polymarketCost: 124.00, // 0.62 * 200
-        estimatedProfit: 6.00, // 预估利润 $6.00
-        endDate: '2026-12-31T23:59:00Z', // 结算时间
-        // MAKER 模式无手续费，不设置 feeRateBps
-    };
-
-    // 格式化输出
-    const formatTaker = formatArbMessage(takerExample);
-    const formatMaker = formatArbMessage(makerExample);
-
-    console.log('\n【吃单模式 TAKER 示例】');
-    console.log('-'.repeat(60));
-    console.log(formatTaker.replace(/<\/?b>/g, '**').replace(/<\/?code>/g, '`'));
-
-    console.log('\n【挂单模式 MAKER 示例】');
-    console.log('-'.repeat(60));
-    console.log(formatMaker.replace(/<\/?b>/g, '**').replace(/<\/?code>/g, '`'));
-
-    console.log('\n' + '='.repeat(60));
-}
-
-/**
- * 格式化套利消息 (用于模拟和实际发送)
- */
-function formatArbMessage(alert: ArbitrageAlert): string {
-    const modeIcon = alert.mode === 'MAKER' ? '📌' : '⚡';
-    const modeText = alert.mode === 'MAKER' ? '挂单' : '吃单';
-    const profitEmoji = alert.profitPercent >= 0.5 ? '🔥' : '💰';
-    const sideText = alert.side === 'NO' ? 'NO→YES' : 'YES→NO';
-
-    const qty = alert.maxQuantity || 0;
-    const predictCost = alert.predictCost ?? (alert.predictYesPrice * qty);
-    const polyCost = alert.polymarketCost ?? (alert.polymarketNoPrice * qty);
-    const totalFunds = predictCost + polyCost;
-    const estProfit = alert.estimatedProfit ?? (totalFunds * alert.profitPercent / 100);
-
-    // 格式化结算时间
-    let settlementText = '';
-    if (alert.endDate) {
-        const endDateObj = new Date(alert.endDate);
-        const now = new Date();
-        const daysLeft = Math.ceil((endDateObj.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-        const dateStr = `${endDateObj.getFullYear()}/${endDateObj.getMonth() + 1}/${endDateObj.getDate()}`;
-        settlementText = `\n📅 结算: ${dateStr} (${daysLeft}天后)`;
-    }
-
-    let message = `${profitEmoji} <b>发现套利机会</b> ${modeIcon} ${modeText}
-<b>利润:</b> $${estProfit.toFixed(2)} (${alert.profitPercent.toFixed(2)}%)  <b>占用:</b> $${totalFunds.toFixed(0)}${settlementText}
-
-<b>市场:</b> ${alert.marketName}
-<b>Predict ID:</b> ${alert.predictMarketId}
-
-<b>方向:</b> ${sideText}
-<b>深度:</b> ${qty.toFixed(0)} 股
-<b>总成本:</b> ${(alert.totalCost * 100).toFixed(1)}¢  pr:$${predictCost.toFixed(0)}  pm:$${polyCost.toFixed(0)}`;
-
-    // 吃单模式显示费用信息 (TAKER 有手续费，MAKER 无手续费)
-    if (alert.mode === 'TAKER' && alert.feeRateBps !== undefined) {
-        const feePercent = (alert.feeRateBps / 100).toFixed(2);
-        const feeTotal = alert.feeTotal ?? 0;
-        message += `
-<b>费用:</b> ${feePercent}% ($${feeTotal.toFixed(4)})`;
-    }
-
-    return message;
 }
