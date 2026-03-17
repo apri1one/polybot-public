@@ -425,7 +425,6 @@ export class PolymarketTrader extends EventEmitter {
                 if (this.telegram) {
                     const marketName = input.marketTitle
                         || this.tokenTitleCache.get(input.tokenId)
-
                         || `Token ${input.tokenId.slice(0, 10)}...`;
                     this.telegram.alertError({
                         operation: '下单',
@@ -691,7 +690,6 @@ export class PolymarketTrader extends EventEmitter {
                 if (this.telegram && !options?.skipTelegram) {
                     const marketName = options?.marketTitle
                         || this.orderTitleCache.get(orderId)
-
                         || `Order ${orderId.slice(0, 10)}...`;
                     this.telegram.alertOrder({
                         type: 'CANCELLED',
