@@ -271,7 +271,8 @@ export class MultiHedgeExecutor {
 
             if (params.side === 'BUY') {
                 // 价格守护: mainPrice + bestAsk <= 1 允许（含保本），> 1 拒绝（亏损）
-                if (bestAsk > params.maxPrice) {
+                // 使用 1e-9 epsilon 容差防止浮点精度误判 (如 1-0.77=0.22999999999999998)
+                if (bestAsk > params.maxPrice + 1e-9) {
                     const message = `价格守护拒绝: bestAsk=${bestAsk} > maxPrice=${params.maxPrice}, 总成本超过 1`;
                     console.log(`[MultiHedge] ${message}`);
                     return { ok: false, reason: 'price_guard_rejected', message, snapshot };
@@ -280,7 +281,7 @@ export class MultiHedgeExecutor {
             }
 
             // SELL 侧守护: bestBid >= maxPrice 允许, < maxPrice 拒绝
-            if (bestBid < params.maxPrice) {
+            if (bestBid < params.maxPrice - 1e-9) {
                 const message = `价格守护拒绝: bestBid=${bestBid} < minPrice=${params.maxPrice}`;
                 console.log(`[MultiHedge] ${message}`);
                 return { ok: false, reason: 'price_guard_rejected', message, snapshot };
