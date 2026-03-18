@@ -220,23 +220,29 @@ const CardActiveTasks = ({ tasks, pairings, onCancelTask, cancellingTaskId, colu
                         <div className={`flex-1 grid ${gridCls} gap-2`}>
                             {columns.map((tokenId, idx) => {
                                 if (!tokenId) return <div key={idx} />;
-                                const task = pTasks.find(t => t.tokenId === tokenId);
-                                if (!task) return <div key={idx} />;
-                                const isCancelling = cancellingTaskId === task.id;
-                                const filled = Number(task.filledQty || 0);
-                                const total = Number(task.quantity || 0);
+                                const colTasks = pTasks.filter(t => t.tokenId === tokenId);
+                                if (colTasks.length === 0) return <div key={idx} />;
                                 return (
-                                    <div key={idx} className="flex items-center gap-1.5 bg-background/40 rounded-lg px-2 py-1.5 text-[11px] border border-border/50">
-                                        <span className="font-semibold text-foreground truncate">{task.selectionLabel}</span>
-                                        <span className="font-mono text-gray-400 shrink-0">{filled}/{total}</span>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); onCancelTask && onCancelTask(task.id); }}
-                                            disabled={isCancelling}
-                                            className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center rounded-md border border-red-400/40 text-red-400 text-xs font-bold hover:bg-red-500 hover:text-white hover:border-red-500 transition-all disabled:opacity-40"
-                                            title="取消任务"
-                                        >
-                                            {isCancelling ? '\u00B7' : '\u00D7'}
-                                        </button>
+                                    <div key={idx} className="space-y-1">
+                                        {colTasks.map(task => {
+                                            const isCancelling = cancellingTaskId === task.id;
+                                            const filled = Number(task.filledQty || 0);
+                                            const total = Number(task.quantity || 0);
+                                            return (
+                                                <div key={task.id} className="flex items-center gap-1.5 bg-background/40 rounded-lg px-2 py-1.5 text-[11px] border border-border/50">
+                                                    <span className="font-mono text-primary shrink-0">{formatPrice(task.price)}</span>
+                                                    <span className="font-mono text-gray-400 shrink-0">{filled}/{total}</span>
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); onCancelTask && onCancelTask(task.id); }}
+                                                        disabled={isCancelling}
+                                                        className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center rounded-md border border-red-400/40 text-red-400 text-xs font-bold hover:bg-red-500 hover:text-white hover:border-red-500 transition-all disabled:opacity-40"
+                                                        title="取消任务"
+                                                    >
+                                                        {isCancelling ? '\u00B7' : '\u00D7'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
                                 );
                             })}
