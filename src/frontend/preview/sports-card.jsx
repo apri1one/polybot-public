@@ -146,53 +146,58 @@ function resolveTradablePrice(primaryPrice, fallbackPrice) {
 // CardActiveTasks — 卡片内显示该市场的活跃任务
 // ============================================================================
 
-const CardActiveTasks = ({ tasks, pairings, onCancelTask, cancellingTaskId, marketTokenIds }) => {
-    if (!tasks || !tasks.length || !marketTokenIds || !marketTokenIds.length) return null;
+const CardActiveTasks = ({ tasks, pairings, onCancelTask, cancellingTaskId, columns }) => {
+    if (!tasks || !tasks.length || !columns || !columns.length) return null;
 
-    const matched = tasks.filter(t => marketTokenIds.includes(t.tokenId));
+    const allTokenIds = columns.filter(Boolean);
+    const matched = tasks.filter(t => allTokenIds.includes(t.tokenId));
     if (matched.length === 0) return null;
+
+    // Group by pairing
+    const groups = {};
+    matched.forEach(t => {
+        const pid = String(t.resolvedPairingId || t.polyMultiPairingId || 'auto');
+        if (!groups[pid]) groups[pid] = [];
+        groups[pid].push(t);
+    });
+
+    const gridCls = columns.length === 3 ? 'grid-cols-3' : 'grid-cols-2';
 
     return (
         <div className="mt-3 space-y-1.5">
             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Active Tasks</div>
-            {matched.map(task => {
-                const pid = task.resolvedPairingId || task.polyMultiPairingId;
-                const p = pid && pairings && pairings.find(x => x.id === pid);
-                const isCancelling = cancellingTaskId === task.id;
-                const filled = Number(task.filledQty || 0);
-                const total = Number(task.quantity || 0);
-                const progress = total > 0 ? (filled / total) * 100 : 0;
-
+            {Object.entries(groups).map(([pid, pTasks]) => {
+                const p = pairings && pairings.find(x => String(x.id) === pid);
+                const pairingLabel = p ? (p.name || `P#${p.id}`) : 'Auto';
                 return (
-                    <div key={task.id} className="flex items-center gap-2 bg-background/40 rounded-xl px-3 py-1.5 text-[11px] border border-border/50">
-                        {/* 配对组 — 最左侧 */}
-                        {p ? (
-                            <span className="font-bold px-1.5 py-0.5 rounded-lg bg-primary/15 text-primary font-mono shrink-0 text-[10px]">
-                                {p.name || `P#${p.id}`}
-                            </span>
-                        ) : (
-                            <span className="font-bold px-1.5 py-0.5 rounded-lg bg-muted text-gray-500 font-mono shrink-0 text-[10px]">
-                                Auto
-                            </span>
-                        )}
-                        {/* 队伍名 */}
-                        <span className="font-semibold text-foreground truncate">{task.selectionLabel || '--'}</span>
-                        {/* shares 进度 */}
-                        <span className="font-mono text-gray-400 shrink-0 flex items-center gap-1.5">
-                            <span className="inline-block w-12 h-1 bg-muted rounded-full overflow-hidden">
-                                <span className="block h-full bg-primary rounded-full" style={{ width: `${Math.min(progress, 100)}%` }} />
-                            </span>
-                            {filled.toFixed(0)}/{total.toFixed(0)}
+                    <div key={pid} className="flex items-center gap-1.5">
+                        <span className="font-bold px-1.5 py-0.5 rounded-lg bg-primary/15 text-primary font-mono shrink-0 text-[10px] min-w-[36px] text-center">
+                            {pairingLabel}
                         </span>
-                        {/* 取消按钮 */}
-                        <button
-                            onClick={(e) => { e.stopPropagation(); onCancelTask && onCancelTask(task.id); }}
-                            disabled={isCancelling}
-                            className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center rounded-md border border-red-400/40 text-red-400 text-xs font-bold hover:bg-red-500 hover:text-white hover:border-red-500 transition-all disabled:opacity-40"
-                            title="取消任务"
-                        >
-                            {isCancelling ? '\u00B7' : '\u00D7'}
-                        </button>
+                        <div className={`flex-1 grid ${gridCls} gap-2`}>
+                            {columns.map((tokenId, idx) => {
+                                if (!tokenId) return <div key={idx} />;
+                                const task = pTasks.find(t => t.tokenId === tokenId);
+                                if (!task) return <div key={idx} />;
+                                const isCancelling = cancellingTaskId === task.id;
+                                const filled = Number(task.filledQty || 0);
+                                const total = Number(task.quantity || 0);
+                                return (
+                                    <div key={idx} className="flex items-center gap-1.5 bg-background/40 rounded-lg px-2 py-1.5 text-[11px] border border-border/50">
+                                        <span className="font-semibold text-foreground truncate">{task.selectionLabel}</span>
+                                        <span className="font-mono text-gray-400 shrink-0">{filled}/{total}</span>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); onCancelTask && onCancelTask(task.id); }}
+                                            disabled={isCancelling}
+                                            className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center rounded-md border border-red-400/40 text-red-400 text-xs font-bold hover:bg-red-500 hover:text-white hover:border-red-500 transition-all disabled:opacity-40"
+                                            title="取消任务"
+                                        >
+                                            {isCancelling ? '\u00B7' : '\u00D7'}
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 );
             })}
@@ -386,7 +391,7 @@ const BinaryCard = ({ market, onOpenTaskModal, taskEnabled, tradeEnabled, active
                     pairings={pairings}
                     onCancelTask={onCancelTask}
                     cancellingTaskId={cancellingTaskId}
-                    marketTokenIds={[market.awayTokenId, market.homeTokenId].filter(Boolean)}
+                    columns={[market.awayTokenId, market.homeTokenId]}
                 />
             </div>
         </div>
@@ -528,11 +533,7 @@ const ThreeWayCard = ({ market, onOpenTaskModal, taskEnabled, tradeEnabled, acti
                     pairings={pairings}
                     onCancelTask={onCancelTask}
                     cancellingTaskId={cancellingTaskId}
-                    marketTokenIds={[
-                        ...(rawSelections || []).map(s => s.tokenId),
-                        market.awayTokenId,
-                        market.homeTokenId,
-                    ].filter(Boolean)}
+                    columns={selections.map(s => s.tokenId)}
                 />
             </div>
         </div>
