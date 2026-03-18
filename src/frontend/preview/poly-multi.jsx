@@ -134,6 +134,14 @@ const polyMultiApi = {
         const r = await fetch(`${baseUrl}/api/poly-multi/wallet-query/status`);
         return r.json();
     },
+    async redeemWallet(baseUrl, walletId) {
+        const r = await fetch(`${baseUrl}/api/poly-multi/wallets/${walletId}/redeem`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        return r.json();
+    },
 };
 
 // ============================================================
@@ -368,7 +376,7 @@ function BatchImportForm({ baseUrl, onImported, existingCount = 0 }) {
 // MatchedPairingsPanel
 // ============================================================
 
-function MatchedPairingsPanel({ pairings, onUnmatch, onActivate, onDeactivate, baseUrl, onRenamed, onDeleteWallet }) {
+function MatchedPairingsPanel({ pairings, onUnmatch, onActivate, onDeactivate, baseUrl, onRenamed, onDeleteWallet, onRedeemWallet, redeemingWallets }) {
     if (pairings.length === 0) {
         return React.createElement('div', { className: 'text-center py-8 text-gray-400 text-sm' }, '暂无匹配');
     }
@@ -407,10 +415,17 @@ function MatchedPairingsPanel({ pairings, onUnmatch, onActivate, onDeactivate, b
                                 React.createElement('span', { className: 'text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-xl bg-primary text-white' }, 'Master'),
                                 master ? React.createElement(EditableLabel, { walletId: master.id, label: master.label, baseUrl, onRenamed }) : React.createElement('span', { className: 'text-[11px] text-white' }, '?'),
                             ),
-                            master && React.createElement('button', {
-                                onClick: () => onDeleteWallet(master.id),
-                                className: 'text-[10px] px-1.5 py-0.5 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20',
-                            }, '删除'),
+                            master && React.createElement('div', { className: 'flex items-center gap-1' },
+                                React.createElement('button', {
+                                    onClick: () => onRedeemWallet(master.id),
+                                    disabled: redeemingWallets?.[master.id],
+                                    className: 'text-[10px] px-1.5 py-0.5 rounded-xl bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 disabled:opacity-50',
+                                }, redeemingWallets?.[master.id] ? 'Redeeming...' : 'Redeem'),
+                                React.createElement('button', {
+                                    onClick: () => onDeleteWallet(master.id),
+                                    className: 'text-[10px] px-1.5 py-0.5 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20',
+                                }, '删除'),
+                            ),
                         ),
                         React.createElement('div', { className: 'text-[11px] font-mono text-gray-400 truncate select-all mb-1' },
                             'EOA: ', master?.address || '---',
@@ -426,10 +441,17 @@ function MatchedPairingsPanel({ pairings, onUnmatch, onActivate, onDeactivate, b
                                 React.createElement('span', { className: 'text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-xl bg-red-500 text-white' }, 'Hedge'),
                                 hedge ? React.createElement(EditableLabel, { walletId: hedge.id, label: hedge.label, baseUrl, onRenamed }) : React.createElement('span', { className: 'text-[11px] text-white' }, '?'),
                             ),
-                            hedge && React.createElement('button', {
-                                onClick: () => onDeleteWallet(hedge.id),
-                                className: 'text-[10px] px-1.5 py-0.5 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20',
-                            }, '删除'),
+                            hedge && React.createElement('div', { className: 'flex items-center gap-1' },
+                                React.createElement('button', {
+                                    onClick: () => onRedeemWallet(hedge.id),
+                                    disabled: redeemingWallets?.[hedge.id],
+                                    className: 'text-[10px] px-1.5 py-0.5 rounded-xl bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 disabled:opacity-50',
+                                }, redeemingWallets?.[hedge.id] ? 'Redeeming...' : 'Redeem'),
+                                React.createElement('button', {
+                                    onClick: () => onDeleteWallet(hedge.id),
+                                    className: 'text-[10px] px-1.5 py-0.5 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20',
+                                }, '删除'),
+                            ),
                         ),
                         React.createElement('div', { className: 'text-[11px] font-mono text-gray-400 truncate select-all mb-1' },
                             'EOA: ', hedge?.address || '---',
@@ -449,7 +471,7 @@ function MatchedPairingsPanel({ pairings, onUnmatch, onActivate, onDeactivate, b
 // UnmatchedWalletsPanel
 // ============================================================
 
-function UnmatchedWalletsPanel({ wallets, onAutoMatch, onDelete, baseUrl, onRenamed }) {
+function UnmatchedWalletsPanel({ wallets, onAutoMatch, onDelete, baseUrl, onRenamed, onRedeemWallet, redeemingWallets }) {
     const [selectedHedge, setSelectedHedge] = useState({});
 
     if (wallets.length === 0) {
@@ -481,6 +503,11 @@ function UnmatchedWalletsPanel({ wallets, onAutoMatch, onDelete, baseUrl, onRena
                             onClick: () => onAutoMatch(w.id, hedgeId ? Number(hedgeId) : undefined),
                             className: 'text-xs font-semibold px-3 py-1.5 rounded-xl bg-primary text-white hover:bg-green-700',
                         }, '设为Master'),
+                        React.createElement('button', {
+                            onClick: () => onRedeemWallet(w.id),
+                            disabled: redeemingWallets?.[w.id],
+                            className: 'text-xs font-semibold px-3 py-1.5 rounded-xl border border-yellow-400 text-yellow-400 hover:bg-yellow-500 hover:text-white disabled:opacity-50',
+                        }, redeemingWallets?.[w.id] ? 'Redeeming...' : 'Redeem'),
                         React.createElement('button', {
                             onClick: () => onDelete(w.id),
                             className: 'text-xs font-semibold px-3 py-1.5 rounded-xl border border-red-400 text-red-500 hover:bg-red-500 hover:text-white',
@@ -624,6 +651,31 @@ function PolyMultiTab({ apiBaseUrl }) {
         }
     };
 
+    const [redeemingWallets, setRedeemingWallets] = useState({});
+
+    const handleRedeemWallet = async (walletId) => {
+        const wallet = wallets.find(w => w.id === walletId);
+        const label = wallet ? wallet.label : `钱包${walletId}`;
+        if (!confirm(`确认对 ${label} 执行一键 Redeem？将赎回所有已结算仓位。`)) return;
+        setRedeemingWallets(prev => ({ ...prev, [walletId]: true }));
+        try {
+            const result = await polyMultiApi.redeemWallet(baseUrl, walletId);
+            if (result.success) {
+                const msg = result.total === 0
+                    ? `${label}: 没有可赎回的仓位`
+                    : `${label}: ${result.succeeded}/${result.total} 赎回成功` + (result.failed > 0 ? ` (${result.failed} 失败)` : '');
+                alert(msg);
+                refreshAll();
+            } else {
+                alert(`Redeem 失败: ${result.error}`);
+            }
+        } catch (e) {
+            alert(`Redeem 异常: ${e.message}`);
+        } finally {
+            setRedeemingWallets(prev => ({ ...prev, [walletId]: false }));
+        }
+    };
+
     const sections = ['wallets', 'history'];
     const sectionLabels = { wallets: '钱包管理', history: '对冲记录' };
 
@@ -676,6 +728,8 @@ function PolyMultiTab({ apiBaseUrl }) {
                     baseUrl,
                     onRenamed: refreshAll,
                     onDeleteWallet: handleDeleteWallet,
+                    onRedeemWallet: handleRedeemWallet,
+                    redeemingWallets,
                 }),
             ),
 
@@ -690,6 +744,8 @@ function PolyMultiTab({ apiBaseUrl }) {
                     onDelete: handleDeleteWallet,
                     baseUrl,
                     onRenamed: refreshAll,
+                    onRedeemWallet: handleRedeemWallet,
+                    redeemingWallets,
                 }),
             ),
 

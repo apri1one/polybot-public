@@ -8,7 +8,7 @@
 // 运动类型 & 市场类型
 // ============================================================================
 
-export type PolySportType = 'nba' | 'nhl' | 'football' | 'lol' | 'cs2' | 'dota2';
+export type PolySportType = 'nba' | 'nhl' | 'football' | 'ncaa' | 'lol' | 'cs2' | 'dota2';
 
 export type PolyMarketType = 'moneyline' | 'three-way' | 'futures' | 'outright';
 

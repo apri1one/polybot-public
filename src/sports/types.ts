@@ -100,6 +100,7 @@ export interface PolySportsMarketView {
     eventTitle?: string;
     isThreeWay?: boolean;
     selections?: PolySportsSelectionView[];
+    rewardsDailyRate?: number;
 }
 
 // ============================================================================
@@ -120,4 +121,6 @@ export interface PolySportsStats {
     cachedTotal: number;
     activeTaskMarkets: number;
     bySport: Record<PolySportType, number>;
+    rewardsBySport: Record<PolySportType, number>;
+    totalRewards: number;
 }

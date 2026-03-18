@@ -5,6 +5,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { JsonRpcProvider } from 'ethers';
 import type { WalletManager } from './wallet-manager.js';
 import type { PairingService } from './pairing-service.js';
 import type {
@@ -15,6 +16,8 @@ import type {
     PolyMultiStatus,
 } from './types.js';
 import * as db from './db.js';
+import { redeemAll } from './redeem-service.js';
+import type { RedeemRequest } from './redeem-service.js';
 
 const MAX_BODY_SIZE = 512 * 1024; // 512KB
 
@@ -352,6 +355,112 @@ export function createPolyMultiRouter(
             try {
                 const results = await walletQueryScheduler?.refreshAll();
                 json(res, { success: true, results }, 200, cors);
+            } catch (e: unknown) {
+                error(res, (e as Error).message, 500, cors);
+            }
+            return true;
+        }
+
+        // ============ Redeem ============
+        const redeemMatch = url.match(/^\/api\/poly-multi\/wallets\/(\d+)\/redeem$/);
+        if (redeemMatch && method === 'POST') {
+            if (!requireJsonContentType(req)) {
+                error(res, 'Content-Type must be application/json', 415, cors);
+                return true;
+            }
+
+            const walletId = parseInt(redeemMatch[1], 10);
+            const wallet = walletManager.listWallets().find(w => w.id === walletId);
+            if (!wallet) {
+                error(res, `Wallet ${walletId} not found`, 404, cors);
+                return true;
+            }
+
+            const creds = walletManager.getCredentials(walletId);
+            if (!creds) {
+                error(res, 'Wallet credentials not available (locked?)', 403, cors);
+                return true;
+            }
+
+            try {
+                // 1. 查询可赎回仓位
+                const positionsRes = await fetch(
+                    `https://data-api.polymarket.com/positions?user=${wallet.proxyAddress}&sizeThreshold=0&redeemable=true`,
+                );
+                if (!positionsRes.ok) {
+                    error(res, `Failed to fetch positions: HTTP ${positionsRes.status}`, 502, cors);
+                    return true;
+                }
+                const positions = await positionsRes.json() as Array<{
+                    conditionId: string;
+                    size: number;
+                    outcome: string;
+                    title: string;
+                    redeemable: boolean;
+                }>;
+
+                const redeemable = positions.filter(p => p.redeemable && p.size > 0);
+                if (redeemable.length === 0) {
+                    json(res, { success: true, message: 'No redeemable positions', results: [] }, 200, cors);
+                    return true;
+                }
+
+                // 2. 查询 negRisk 状态
+                const requests: RedeemRequest[] = [];
+                for (const pos of redeemable) {
+                    let negRisk = false;
+                    try {
+                        const marketRes = await fetch(`https://clob.polymarket.com/markets/${pos.conditionId}`);
+                        if (marketRes.ok) {
+                            const marketData = await marketRes.json() as { neg_risk?: boolean };
+                            negRisk = marketData.neg_risk === true;
+                        }
+                    } catch { /* 默认 negRisk=false */ }
+
+                    const req: RedeemRequest = { conditionId: pos.conditionId, negRisk };
+                    if (negRisk) {
+                        const amount = BigInt(Math.round(pos.size * 1e6));
+                        req.amounts = pos.outcome === 'Yes' ? [amount, 0n] : [0n, amount];
+                    }
+                    requests.push(req);
+                }
+
+                // 3. 执行批量 redeem
+                const RPC_URLS = [
+                    'https://polygon.drpc.org',
+                    'https://polygon-bor-rpc.publicnode.com',
+                    'https://polygon-rpc.com',
+                ];
+                let provider: JsonRpcProvider | null = null;
+                for (const rpcUrl of RPC_URLS) {
+                    try {
+                        const p = new JsonRpcProvider(rpcUrl, 137);
+                        await p.getBlockNumber();
+                        provider = p;
+                        break;
+                    } catch { continue; }
+                }
+                if (!provider) {
+                    error(res, 'All Polygon RPC endpoints failed', 502, cors);
+                    return true;
+                }
+
+                const privateKey = creds.privateKey.toString('utf8');
+                const results = await redeemAll(provider, privateKey, wallet.proxyAddress, requests);
+
+                const succeeded = results.filter(r => r.success).length;
+                json(res, {
+                    success: true,
+                    total: results.length,
+                    succeeded,
+                    failed: results.length - succeeded,
+                    results: results.map(r => ({
+                        conditionId: r.conditionId,
+                        success: r.success,
+                        txHash: r.txHash || undefined,
+                        error: r.error || undefined,
+                    })),
+                }, 200, cors);
             } catch (e: unknown) {
                 error(res, (e as Error).message, 500, cors);
             }

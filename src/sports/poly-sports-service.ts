@@ -29,11 +29,13 @@ const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 const FETCH_TIMEOUT_MS = 10_000;
 const BROAD_LIMIT = 500;
 const BROAD_MAX_PAGES = 6;
+const CLOB_BASE = 'https://clob.polymarket.com';
 
 const POLY_SPORT_TAG_IDS: Record<string, number> = {
     nba: 745,
     nhl: 899,
     football: 82,
+    ncaa: 100149,
     lol: 65,
 };
 
@@ -41,12 +43,13 @@ const SLUG_SPORT_MAP: [RegExp, PolySportType][] = [
     [/^nba-/, 'nba'],
     [/^nhl-/, 'nhl'],
     [/^(epl|la-liga|serie-a|bundesliga|ligue-1|soccer|ucl|mls|copa)-/, 'football'],
+    [/^(ncaa|cbb|cwbb|cfb)-/, 'ncaa'],
     [/^lol-/, 'lol'],
     [/^cs2?-/, 'cs2'],
     [/^dota-/, 'dota2'],
 ];
 
-const IGNORED_SLUG_PREFIXES = /^(cbb|cwbb|cfb|ncaa|ufc|wbc|cricc|shl|snhl|khl|ahl|dehl|cehl|wll|pll|bknbl|euroleague|crint)-/;
+const IGNORED_SLUG_PREFIXES = /^(ufc|wbc|cricc|shl|snhl|khl|ahl|dehl|cehl|wll|pll|bknbl|euroleague|crint)-/;
 
 interface GammaMarket {
     id: string;
@@ -150,6 +153,9 @@ export class PolySportsService {
     private hotRefreshInFlight = false;
     private coldRefreshInFlight = false;
 
+    /** conditionId → daily reward rate (USDC) */
+    private rewardsByCondition = new Map<string, number>();
+
     async start(onUpdate: (data: PolySportsSSE) => void): Promise<void> {
         this.onUpdate = onUpdate;
         console.log('[PolySports] Starting sports service...');
@@ -185,6 +191,11 @@ export class PolySportsService {
                     this.coldRefreshInFlight = false;
                 });
         }, COLD_ORDERBOOK_REFRESH_INTERVAL);
+
+        // 启动时获取一次 rewards 数据（缓存，不定时刷新）
+        this.fetchRewards().catch(error => {
+            console.warn('[PolySports] Rewards fetch failed:', error.message);
+        });
 
         console.log(`[PolySports] Service ready: cached=${this.markets.size}, visible=${this.getVisibleMarkets().length}`);
     }
@@ -249,7 +260,7 @@ export class PolySportsService {
 
         const tagFetches = tagIds.map(async ([sport, tagId]) => {
             try {
-                const url = `${GAMMA_BASE}/markets?active=true&closed=false&limit=50&tag_id=${tagId}&sports_market_types=moneyline`;
+                const url = `${GAMMA_BASE}/markets?active=true&closed=false&limit=200&tag_id=${tagId}&sports_market_types=moneyline`;
                 const res = await fetchWithTimeout(url);
                 if (!res.ok) {
                     tagResults.push({ name: sport, count: 0 });
@@ -701,6 +712,13 @@ export class PolySportsService {
     }
 
     private serializeMarket(market: PolySportsMarket): PolySportsMarketView {
+        let rewardsDailyRate = this.rewardsByCondition.get(market.conditionId) || 0;
+        if (market.selections) {
+            for (const sel of market.selections) {
+                rewardsDailyRate += this.rewardsByCondition.get(sel.conditionId) || 0;
+            }
+        }
+
         return {
             conditionId: market.conditionId,
             question: market.question,
@@ -731,6 +749,7 @@ export class PolySportsService {
                 bidDepth: selection.bidDepth,
                 askDepth: selection.askDepth,
             })),
+            rewardsDailyRate: rewardsDailyRate > 0 ? rewardsDailyRate : undefined,
         };
     }
 
@@ -798,16 +817,15 @@ export class PolySportsService {
 
     private getStats(): PolySportsStats {
         const bySport: Record<PolySportType, number> = {
-            nba: 0,
-            nhl: 0,
-            football: 0,
-            lol: 0,
-            cs2: 0,
-            dota2: 0,
+            nba: 0, nhl: 0, football: 0, ncaa: 0, lol: 0, cs2: 0, dota2: 0,
+        };
+        const rewardsBySport: Record<PolySportType, number> = {
+            nba: 0, nhl: 0, football: 0, ncaa: 0, lol: 0, cs2: 0, dota2: 0,
         };
 
         let total = 0;
         let activeTaskMarkets = 0;
+        let totalRewards = 0;
         const now = Date.now();
 
         for (const market of this.markets.values()) {
@@ -815,6 +833,23 @@ export class PolySportsService {
             if (isVisible) {
                 total += 1;
                 bySport[market.sport] = (bySport[market.sport] || 0) + 1;
+
+                const reward = this.rewardsByCondition.get(market.conditionId) || 0;
+                if (reward > 0) {
+                    rewardsBySport[market.sport] = (rewardsBySport[market.sport] || 0) + reward;
+                    totalRewards += reward;
+                }
+
+                // 多选市场: 合并子 conditionId 的奖励
+                if (market.selections) {
+                    for (const sel of market.selections) {
+                        const selReward = this.rewardsByCondition.get(sel.conditionId) || 0;
+                        if (selReward > 0) {
+                            rewardsBySport[market.sport] = (rewardsBySport[market.sport] || 0) + selReward;
+                            totalRewards += selReward;
+                        }
+                    }
+                }
             }
             if (this.isHotMarket(market)) {
                 activeTaskMarkets += 1;
@@ -826,6 +861,50 @@ export class PolySportsService {
             cachedTotal: this.markets.size,
             activeTaskMarkets,
             bySport,
+            rewardsBySport,
+            totalRewards,
         };
+    }
+
+    // ========================================================================
+    // Rewards 数据获取
+    // ========================================================================
+
+    private async fetchRewards(): Promise<void> {
+        const next = new Map<string, number>();
+        let cursor: string | null = null;
+
+        for (let page = 0; page < 10; page++) {
+            try {
+                const url = cursor
+                    ? `${CLOB_BASE}/rewards/markets/current?next_cursor=${cursor}`
+                    : `${CLOB_BASE}/rewards/markets/current`;
+                const res = await fetchWithTimeout(url);
+                if (!res.ok) break;
+
+                const body = await res.json() as {
+                    data?: Array<{ condition_id: string; total_daily_rate?: number }>;
+                    next_cursor?: string;
+                };
+
+                if (!Array.isArray(body.data) || body.data.length === 0) break;
+
+                for (const item of body.data) {
+                    const rate = item.total_daily_rate ?? 0;
+                    if (rate > 0) {
+                        next.set(item.condition_id, rate);
+                    }
+                }
+
+                cursor = body.next_cursor || null;
+                if (!cursor) break;
+            } catch (error: any) {
+                console.warn(`[PolySports] Rewards page ${page} failed: ${error.message}`);
+                break;
+            }
+        }
+
+        this.rewardsByCondition = next;
+        console.log(`[PolySports] Rewards loaded: ${next.size} markets with active rewards`);
     }
 }

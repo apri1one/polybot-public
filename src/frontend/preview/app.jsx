@@ -242,6 +242,7 @@ const SPORT_TABS = [
     { key: 'nba', label: 'NBA', emoji: '\u{1F3C0}' },
     { key: 'nhl', label: 'NHL', emoji: '\u{1F3D2}' },
     { key: 'football', label: 'Football', emoji: '\u26BD' },
+    { key: 'ncaa', label: 'NCAA', emoji: '\u{1F3C8}' },
     { key: 'lol', label: 'LoL', emoji: '\u{1F3AE}' },
     { key: 'cs2', label: 'CS2', emoji: '\u{1F52B}' },
     { key: 'dota2', label: 'Dota2', emoji: '\u{1F5E1}\uFE0F' },

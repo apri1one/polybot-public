@@ -9,6 +9,7 @@ const SPORT_ICONS = {
     nba: { emoji: '\u{1F3C0}', label: 'NBA' },
     nhl: { emoji: '\u{1F3D2}', label: 'NHL' },
     football: { emoji: '\u26BD', label: 'Football' },
+    ncaa: { emoji: '\u{1F3C8}', label: 'NCAA' },
     lol: { emoji: '\u{1F3AE}', label: 'LoL' },
     cs2: { emoji: '\u{1F52B}', label: 'CS2' },
     dota2: { emoji: '\u{1F5E1}\uFE0F', label: 'Dota2' },
@@ -209,6 +210,11 @@ const BinaryCard = ({ market, onOpenTaskModal, taskEnabled, tradeEnabled }) => {
                 <div className="flex items-center gap-2">
                     <span className="text-lg">{sport.emoji}</span>
                     <span className="text-sm font-medium text-gray-400">{sport.label}</span>
+                    {market.rewardsDailyRate > 0 && (
+                        <span style={{color: '#facc15', fontWeight: 700, fontSize: '11px', letterSpacing: '0.02em'}}>
+                            REWARDS: ${Math.round(market.rewardsDailyRate)} USDC
+                        </span>
+                    )}
                 </div>
                 <div className="text-right">
                     {isLive ? (
@@ -344,6 +350,11 @@ const ThreeWayCard = ({ market, onOpenTaskModal, taskEnabled, tradeEnabled }) =>
                 <div className="flex items-center gap-2">
                     <span className="text-lg">{sport.emoji}</span>
                     <span className="text-sm font-medium text-gray-400">{sport.label}</span>
+                    {market.rewardsDailyRate > 0 && (
+                        <span style={{color: '#facc15', fontWeight: 700, fontSize: '11px', letterSpacing: '0.02em'}}>
+                            REWARDS: ${Math.round(market.rewardsDailyRate)} USDC
+                        </span>
+                    )}
                 </div>
                 <div className="text-right">
                     {isLive ? (
