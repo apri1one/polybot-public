@@ -1162,6 +1162,10 @@ const App = () => {
                                         onOpenTaskModal={openTaskModal}
                                         taskEnabled={tradeEnabled}
                                         tradeEnabled={tradeEnabled}
+                                        activeTasks={activeTasks}
+                                        pairings={pairings}
+                                        onCancelTask={handleCancelTask}
+                                        cancellingTaskId={cancellingTaskId}
                                     />
                                 ))}
                             </div>
