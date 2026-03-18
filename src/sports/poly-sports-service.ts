@@ -489,6 +489,17 @@ export class PolySportsService {
         return dateMatch ? dateMatch[1] : slug;
     }
 
+    /**
+     * Resolve Polymarket event slug for frontend navigation.
+     * Format: eventSlug (extracted base slug from market slug)
+     * URL: https://polymarket.com/event/{slug}
+     */
+    private resolvePolymarketSlug(market: PolySportsMarket): string | undefined {
+        const slug = market.eventSlug || market.slug;
+        if (!slug) return undefined;
+        return this.getEventBaseSlug(slug);
+    }
+
     private rebuildTokenMetadataIndex(): void {
         this.tokenMetadata.clear();
 
@@ -737,6 +748,7 @@ export class PolySportsService {
             volume: market.volume,
             liquidity: market.liquidity,
             eventTitle: market.eventTitle,
+            polymarketSlug: this.resolvePolymarketSlug(market),
             isThreeWay: market.isThreeWay,
             selections: market.selections?.map<PolySportsSelectionView>(selection => ({
                 label: selection.label,

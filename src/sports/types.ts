@@ -98,6 +98,7 @@ export interface PolySportsMarketView {
     volume: number;
     liquidity: number;
     eventTitle?: string;
+    polymarketSlug?: string;
     isThreeWay?: boolean;
     selections?: PolySportsSelectionView[];
     rewardsDailyRate?: number;
