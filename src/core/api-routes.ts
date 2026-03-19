@@ -16,6 +16,7 @@ import type {
     PolyMultiStatus,
 } from './types.js';
 import * as db from './db.js';
+import { DEFAULT_MASTER_PASSWORD } from './crypto-utils.js';
 import { redeemAll } from './redeem-service.js';
 import type { RedeemRequest } from './redeem-service.js';
 
@@ -137,7 +138,7 @@ export function createPolyMultiRouter(
             }
             try {
                 const body = await parseJsonBody<AddWalletRequest>(req);
-                const masterPassword = body.masterPassword || process.env.POLY_MULTI_MASTER_PASSWORD?.trim() || 'poly-multi-local';
+                const masterPassword = body.masterPassword || DEFAULT_MASTER_PASSWORD;
                 if (!body.privateKey || !body.label) {
                     error(res, 'privateKey and label are required', 400, cors);
                     return true;
@@ -158,7 +159,7 @@ export function createPolyMultiRouter(
             }
             try {
                 const body = await parseJsonBody<BatchAddWalletsRequest>(req);
-                const masterPassword = body.masterPassword || process.env.POLY_MULTI_MASTER_PASSWORD?.trim() || 'poly-multi-local';
+                const masterPassword = body.masterPassword || DEFAULT_MASTER_PASSWORD;
                 if (!Array.isArray(body.wallets) || body.wallets.length === 0) {
                     error(res, 'wallets array is required and must not be empty', 400, cors);
                     return true;

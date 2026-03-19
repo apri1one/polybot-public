@@ -53,9 +53,9 @@ POLYGON_CHAIN_ID = 137
 
 SAFE_API_BASE = "https://safe-transaction-polygon.safe.global/api/v1"
 
-SSH_HOST = "predict-server"
-SSH_ENV_PATH = "~/predict_arb/.env"
-SSH_PM2_APP = "dashboard"
+SSH_HOST = os.environ.get("POLY_SSH_HOST", "")
+SSH_ENV_PATH = os.environ.get("POLY_SSH_ENV_PATH", "")
+SSH_PM2_APP = os.environ.get("POLY_SSH_PM2_APP", "")
 
 
 def _find_ssh() -> str:
@@ -245,7 +245,7 @@ def restart_pm2() -> None:
     # 非交互式 SSH 不加载 .bashrc，显式补充 PATH 以找到 node/pm2
     remote_cmd = (
         f"export PATH=\"$HOME/.npm-global/bin:$PATH\" && "
-        f"cd ~/predict_arb && pm2 restart {SSH_PM2_APP} --update-env"
+        f"cd {str(Path(SSH_ENV_PATH).parent) if SSH_ENV_PATH else '~'} && pm2 restart {SSH_PM2_APP} --update-env"
     )
     cmd = [_find_ssh(), SSH_HOST, remote_cmd]
     result = subprocess.run(cmd, capture_output=True, timeout=60)

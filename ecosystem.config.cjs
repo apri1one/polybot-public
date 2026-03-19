@@ -3,7 +3,7 @@ module.exports = {
         name: 'poly-bot',
         script: 'npx',
         args: 'tsx src/server.ts',
-        cwd: '/home/ubuntu/poly',
+        cwd: __dirname,
         env: {
             NODE_ENV: 'production',
             POLY_MULTI_PORT: '3020',

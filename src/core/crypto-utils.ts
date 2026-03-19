@@ -18,8 +18,8 @@ const SALT_LENGTH = 16;      // 128 bits
 const IV_LENGTH = 12;        // 96 bits (GCM 推荐)
 const DIGEST = 'sha512';
 
-/** 固定内部密码（无需用户输入） */
-export const DEFAULT_MASTER_PASSWORD = 'poly-multi-local';
+/** 主密码：优先从环境变量读取，未设置时使用内置默认值 */
+export const DEFAULT_MASTER_PASSWORD = process.env.POLY_MULTI_MASTER_PASSWORD?.trim() || 'poly-multi-local';
 
 /**
  * 从 master password + salt 派生加密密钥
