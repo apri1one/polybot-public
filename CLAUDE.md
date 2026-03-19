@@ -5,12 +5,13 @@ Polymarket 多钱包交易系统，支持体育赛事实时行情、多钱包对
 ## 快速启动
 
 ```bash
-cp .env.example .env   # 编辑填入凭证
+cp .env.example .env   # 填入 Telegram Bot Token + Chat ID
 npm install
 npm start              # 或 npm run dev (watch 模式)
 ```
 
 服务默认监听 `0.0.0.0:3020`，前端页面 `http://localhost:3020/`。
+钱包私钥从前端页面导入，无需写入 .env。
 
 ## 项目结构
 
@@ -58,9 +59,9 @@ tools/
 
 ## 环境变量
 
-见 `.env.example`。关键变量：
+见 `.env.example`。唯一必填项是 Telegram 配置，其余均有默认值：
 
-- `POLY_MULTI_MASTER_PASSWORD` — 钱包加密主密码，留空使用默认值
+- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — Telegram 通知 (必填)
 - `POLY_MULTI_PORT` — HTTP 端口 (默认 3020)
 - `POLY_MULTI_DATA_DIR` — 数据目录 (默认 ./data)
-- `POLYMARKET_TRADER_PRIVATE_KEY` — 单钱包模式私钥
+- `POLY_MULTI_MASTER_PASSWORD` — 钱包加密主密码 (有默认值)
